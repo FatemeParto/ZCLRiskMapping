@@ -1,12 +1,7 @@
 // ============================================================
-// Landsat 8 Analysis: LST, SAVI, SMI, and DEM/Terrain Analysis
+// Landsat 8 Analysis: LST, SAVI, SMI, and DEM
 // ============================================================
 
-// -------------------------
-// Utility Functions
-// -------------------------
-
-/**
  * Mask clouds and shadows for Landsat 8 Surface Reflectance.
  * @param {ee.Image} image - Landsat 8 image.
  * @return {ee.Image} Masked image.
@@ -90,7 +85,7 @@ var landsatL2 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
 // LST Calculation
 // -------------------------
 var LST_collection = landsatSR.map(computeLST);
-Map.addLayer(LST_collection.mosaic(), {min: -18, max: 25, palette: ['white','blue','green','red']}, 'LST');
+Map.addLayer(LST_collection.mosaic(), {min: -18, max: 25, 'LST');
 
 var lstChart = ui.Chart.image.series({
   imageCollection: LST_collection,
@@ -115,10 +110,7 @@ Export.image.toDrive({
 var SAVI_collection = landsatSR.map(computeSAVI);
 
 Map.addLayer(SAVI_collection.median(), {
-  min: 0, max: 1, palette: ['FFFFFF','CE7E45','DF923D','F1B555','FCD163','99B718','74A901',
-                            '66A000','529400','3E8601','207401','056201','004C00','023B01',
-                            '012E01','011D01','011301']
-}, 'SAVI');
+  min: 0, max: 1, 'SAVI');
 
 var saviChart = ui.Chart.image.series({
   imageCollection: SAVI_collection,
@@ -142,11 +134,8 @@ Export.image.toDrive({
 // -------------------------
 var SMI_collection = landsatL2.map(computeSMI);
 
-Map.addLayer(SMI_collection.median(), {
-  min: 0, max: 1, palette: ['FFFFFF','CE7E45','DF923D','F1B555','FCD163','99B718','74A901',
-                            '66A000','529400','3E8601','207401','056201','004C00','023B01',
-                            '012E01','011D01','011301']
-}, 'SMI');
+Map.addLayer(SMI_collection.median(),
+  min: 0, max: 1, 'SMI');
 
 Export.image.toDrive({
   image: SMI_collection.median(),
@@ -166,7 +155,7 @@ var smiChart = ui.Chart.image.series({
 print(smiChart);
 
 // -------------------------
-// DEM & Terrain Analysis
+// DEM
 // -------------------------
 var dem = ee.Image('USGS/SRTMGL1_003').clip(geometry);
 var slope = ee.Terrain.slope(dem);
