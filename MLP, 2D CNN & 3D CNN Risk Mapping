@@ -1,0 +1,526 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import rasterio
+import tensorflow as tf
+
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import (
+    mean_squared_error, mean_absolute_error, accuracy_score, roc_auc_score
+)
+
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import (
+    Dense, Dropout, BatchNormalization, Conv2D, MaxPooling2D, Flatten, InputLayer
+)
+from tensorflow.keras.optimizers import Adam
+from sklearn.neural_network import MLPRegressor
+
+# Ensure reproducibility
+np.random.seed(42)
+tf.random.set_seed(42)
+
+# -------------------------
+# Utility Functions
+# -------------------------
+
+def read_geotiff(file_path):
+    """Read a single-band GeoTIFF file into a numpy array."""
+    with rasterio.open(file_path) as src:
+        return src.read(1)
+
+def stack_env_factors(env_factors):
+    """Stack multiple environmental factors into shape (H, W, C)."""
+    return np.stack(env_factors, axis=-1)
+
+def generate_feature_matrix(env_factors):
+    """Flatten environmental factors into a feature matrix (N, C)."""
+    num_rows, num_cols = env_factors[0].shape
+    feature_matrix = np.zeros((num_rows * num_cols, len(env_factors)))
+    for i, factor in enumerate(env_factors):
+        feature_matrix[:, i] = factor.flatten()
+    return feature_matrix, num_rows, num_cols
+
+def evaluate_performance(y_true, y_pred, threshold=0.5):
+    """Compute regression + classification metrics."""
+    mse = mean_squared_error(y_true, y_pred)
+    mae = mean_absolute_error(y_true, y_pred)
+
+    y_pred_bin = (y_pred > threshold).astype(int)
+    y_true_bin = (y_true > threshold).astype(int)
+
+    accuracy = accuracy_score(y_true_bin, y_pred_bin)
+    auc = roc_auc_score(y_true_bin, y_pred_bin)
+
+    return mse, mae, accuracy, auc
+
+# -------------------------
+# MLP Model
+# -------------------------
+
+def generate_disease_risk_map_mlp(env_factors, disease_map):
+    """
+    Train an MLP on environmental features to predict disease risk map.
+    Implements dropout, batch normalization, ReLU, and Adam optimizer.
+    """
+    X, num_rows, num_cols = generate_feature_matrix(env_factors)
+    y = disease_map.flatten()
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_scaled, y, test_size=0.3, random_state=42
+    )
+
+    # Configure MLP with tuned hyperparameters
+    mlp = MLPRegressor(
+        hidden_layer_sizes=(30, 15),
+        activation="relu",
+        solver="adam",
+        learning_rate_init=0.01,
+        max_iter=10,
+        random_state=42
+    )
+
+    mlp.fit(X_train, y_train)
+    y_pred_test = mlp.predict(X_test)
+
+    mse, mae, accuracy, auc = evaluate_performance(y_test, y_pred_test)
+
+    # Predict full map
+    y_pred_full = mlp.predict(X_scaled).reshape(num_rows, num_cols)
+
+    return y_pred_full, mse, mae, accuracy, auc
+
+# -------------------------
+# CNN Model
+# -------------------------
+
+def generate_disease_risk_map_cnn(env_factors, disease_map, epochs=5, batch_size=32):
+    """
+    Train a 2D CNN on environmental features to predict disease risk map.
+    Implements Conv2D, ReLU, MaxPooling, and Dense layers.
+    """
+    num_rows, num_cols = env_factors[0].shape
+
+    # Stack channels (H, W, C)
+    X = stack_env_factors(env_factors).astype(np.float32)
+    y = disease_map.astype(np.float32)
+
+    # Normalize per channel
+    for i in range(X.shape[2]):
+        scaler = StandardScaler()
+        X[..., i] = scaler.fit_transform(X[..., i])
+
+    # Mask invalid pixels
+    mask = ~np.isnan(y) & np.all(~np.isnan(X), axis=-1)
+    X_valid, y_valid = X[mask], y[mask]
+
+    # Reshape for CNN input
+    X_valid = X_valid.reshape(-1, 1, 1, X.shape[2])
+    y_valid = y_valid.reshape(-1, 1)
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_valid, y_valid, test_size=0.3, random_state=42
+    )
+
+    # Build CNN model
+    model = Sequential([
+        InputLayer(input_shape=(1, 1, X.shape[2])),
+        Conv2D(32, (3, 3), activation="relu", padding="same"),
+        MaxPooling2D((1, 1)),
+        Flatten(),
+        Dense(64, activation="relu"),
+        Dense(1)  # regression output
+    ])
+
+    model.compile(
+        optimizer=Adam(learning_rate=0.01),
+        loss="mse"
+    )
+
+    # Train CNN
+    model.fit(X_train, y_train, validation_data=(X_test, y_test),
+              epochs=epochs, batch_size=batch_size, verbose=1)
+
+    y_pred_test = model.predict(X_test).flatten()
+    mse, mae, accuracy, auc = evaluate_performance(y_test.flatten(), y_pred_test)
+
+    # Predict full map
+    X_full = X.reshape(-1, 1, 1, X.shape[2])
+    y_pred_all = model.predict(X_full).flatten()
+
+    y_pred_map = np.full((num_rows, num_cols), np.nan, dtype=np.float32)
+    y_pred_map[mask] = y_pred_all[mask.flatten()]
+
+    return y_pred_map, mse, mae, accuracy, auc
+
+# -------------------------
+# Main Script
+# -------------------------
+
+if __name__ == "__main__":
+
+    # Paths
+    env_files = [
+        r"C:\smi.tif",
+        r"C:\lst.tif",
+        r"C:\savi.tif",
+        r"C:\dem.tif"
+
+    ]
+    disease_file = r"C:\Users\Yas\Desktop\maps-p3\idw3.tif"
+
+    # Load data
+    env_factors = [read_geotiff(f) for f in env_files]
+    disease_map = read_geotiff(disease_file)
+
+    # Clean anomalies
+    disease_map[disease_map == 250] = 30
+
+    # Train MLP
+    disease_map_mlp, mse_mlp, mae_mlp, acc_mlp, auc_mlp = \
+        generate_disease_risk_map_mlp(env_factors, disease_map)
+
+    # Train CNN
+    disease_map_cnn, mse_cnn, mae_cnn, acc_cnn, auc_cnn = \
+        generate_disease_risk_map_cnn(env_factors, disease_map)
+
+    # Print metrics
+    print("Model\tRMSE\t\tMAE\t\tAccuracy\tAUC")
+    print(f"MLP\t{np.sqrt(mse_mlp):.4f}\t{mae_mlp:.4f}\t{acc_mlp:.4f}\t{auc_mlp:.4f}")
+    print(f"CNN\t{np.sqrt(mse_cnn):.4f}\t{mae_cnn:.4f}\t{acc_cnn:.4f}\t{auc_cnn:.4f}")
+
+    # Visualization
+
+    plt.figure(figsize=(12, 5))
+    plt.subplot(1, 2, 1)
+    plt.imshow(disease_map_mlp)
+    plt.title("ZCL Risk Map (MLP)")
+    plt.colorbar()
+
+    plt.subplot(1, 2, 2)
+    plt.imshow(disease_map_cnn)
+    plt.title("ZCL Risk Map (CNN)")
+    plt.colorbar()
+    plt.tight_layout()
+    plt.show()
+################CNN:
+import os
+from typing import List, Tuple
+
+import numpy as np
+import rasterio
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error, mean_absolute_error, accuracy_score, roc_auc_score
+
+import tensorflow as tf
+from tensorflow.keras import Model
+from tensorflow.keras.layers import (
+    Input,
+    Conv3D,
+    MaxPooling3D,
+    UpSampling3D,
+    BatchNormalization,
+    Activation,
+    Dropout,
+)
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+
+# -----------------------------
+# Reproducibility
+# -----------------------------
+SEED = 42
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
+
+# -----------------------------
+def read_geotiff(path: str) -> np.ndarray:
+    """Read single-band GeoTIFF and return as 2D float32 array."""
+    with rasterio.open(path) as src:
+        arr = src.read(1).astype(np.float32)
+    return arr
+
+
+def stack_env_factors(env_factors_seq: List[List[np.ndarray]]) -> np.ndarray:
+    """
+    Stack environmental factors into array with shape (T, H, W, C)
+    env_factors_seq: list length T, each element is list of channel arrays [H x W,...]
+    """
+    stacked_per_t = [np.stack(ch_list, axis=-1) for ch_list in env_factors_seq]  # list of (H,W,C)
+    return np.stack(stacked_per_t, axis=0)  # (T,H,W,C)
+
+
+def stack_disease_maps(disease_maps_seq: List[np.ndarray]) -> np.ndarray:
+    """Stack disease maps into array shape (T, H, W)."""
+    return np.stack(disease_maps_seq, axis=0)
+
+
+def normalize_channels_over_time_space(X: np.ndarray) -> Tuple[np.ndarray, List[StandardScaler]]:
+    """
+    Normalize each channel using a StandardScaler fitted across all time and spatial locations.
+    X: (T, H, W, C)
+    Returns X_scaled (same shape) and list of scalers for each channel.
+    """
+    T, H, W, C = X.shape
+    X_scaled = np.empty_like(X, dtype=np.float32)
+    scalers: List[StandardScaler] = []
+    for c in range(C):
+        flat = X[..., c].reshape(-1, 1)  # (T*H*W, 1)
+        scaler = StandardScaler()
+        flat_scaled = scaler.fit_transform(flat).reshape(T, H, W)
+        X_scaled[..., c] = flat_scaled
+        scalers.append(scaler)
+    return X_scaled, scalers
+
+
+def extract_patches_sequence(
+    X: np.ndarray, y: np.ndarray, patch_size: Tuple[int, int]
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Extract non-overlapping spatial patches from an input sequence.
+    X: (T, H, W, C)
+    y: (T, H, W)
+    Returns:
+      X_patches: (N_patches, T, ph, pw, C)
+      y_patches: (N_patches, T, ph, pw, 1)
+    """
+    T, H, W, C = X.shape
+    ph, pw = patch_size
+    x_patches = []
+    y_patches = []
+    for i in range(0, H - ph + 1, ph):
+        for j in range(0, W - pw + 1, pw):
+            x_patch = X[:, i : i + ph, j : j + pw, :]
+            y_patch = y[:, i : i + ph, j : j + pw]
+            # skip patches with NaNs
+            if np.isnan(x_patch).any() or np.isnan(y_patch).any():
+                continue
+            x_patches.append(x_patch)
+            y_patches.append(np.expand_dims(y_patch, axis=-1)) 
+    if len(x_patches) == 0:
+        return np.empty((0, T, ph, pw, C), dtype=np.float32), np.empty((0, T, ph, pw, 1), dtype=np.float32)
+    return np.array(x_patches, dtype=np.float32), np.array(y_patches, dtype=np.float32)
+
+
+# -----------------------------
+# 3D-CNN model 
+# -----------------------------
+def build_3d_cnn_unet_like(
+    input_shape: Tuple[int, int, int, int],
+    base_filters: int = 32,
+    dropout_rate: float = 0.1,
+) -> Model:
+    """
+    Build a compact 3D-CNN encoder-decoder (U-Net like) that maps (T,H,W,C) -> (T,H,W,1).
+    - input_shape: (T, H, W, C)
+    - returns compiled Keras Model
+    """
+    inputs = Input(shape=input_shape, name="input_sequence")  # (T,H,W,C)
+
+    # Encoder
+    x = Conv3D(base_filters, kernel_size=(3, 3, 3), padding="same")(inputs)
+    x = BatchNormalization()(x)
+    x = Activation("relu")(x)
+
+    x = Conv3D(base_filters * 2, kernel_size=(3, 3, 3), padding="same")(x)
+    x = BatchNormalization()(x)
+    x = Activation("relu")(x)
+    skip1 = x
+    x = MaxPooling3D(pool_size=(1, 2, 2), padding="same")(x)  # temporal preserved, downsample spatially
+
+    x = Conv3D(base_filters * 4, kernel_size=(3, 3, 3), padding="same")(x)
+    x = BatchNormalization()(x)
+    x = Activation("relu")(x)
+    skip2 = x
+    x = MaxPooling3D(pool_size=(1, 2, 2), padding="same")(x)
+
+    # Bottleneck
+    x = Conv3D(base_filters * 8, kernel_size=(3, 3, 3), padding="same")(x)
+    x = BatchNormalization()(x)
+    x = Activation("relu")(x)
+    x = Dropout(dropout_rate)(x)
+
+    # Decoder
+    x = UpSampling3D(size=(1, 2, 2))(x)
+    x = Conv3D(base_filters * 4, kernel_size=(3, 3, 3), padding="same")(x)
+    x = BatchNormalization()(x)
+    x = Activation("relu")(x)
+    x = tf.keras.layers.Concatenate(axis=-1)([x, skip2])
+
+    x = UpSampling3D(size=(1, 2, 2))(x)
+    x = Conv3D(base_filters * 2, kernel_size=(3, 3, 3), padding="same")(x)
+    x = BatchNormalization()(x)
+    x = Activation("relu")(x)
+    x = tf.keras.layers.Concatenate(axis=-1)([x, skip1])
+
+    x = Conv3D(base_filters, kernel_size=(3, 3, 3), padding="same")(x)
+    x = BatchNormalization()(x)
+    x = Activation("relu")(x)
+
+  
+    outputs = Conv3D(1, kernel_size=(1, 1, 1), activation="linear", name="output_sequence")(x)  
+
+    model = Model(inputs=inputs, outputs=outputs, name="3D_CNN_UNET_Like")
+    model.compile(optimizer=Adam(learning_rate=1e-3), loss="mse", metrics=["mae"])
+    return model
+
+def train_and_evaluate_3dcnn(
+    env_factors_seq: List[List[np.ndarray]],
+    disease_maps_seq: List[np.ndarray],
+    patch_size: Tuple[int, int] = (32, 32),
+    epochs: int = 30,
+    batch_size: int = 8,
+    test_size: float = 0.2,
+    model_dir: str = "models",
+) -> dict:
+    """
+    Full pipeline:
+      - stacks inputs
+      - normalizes channels
+      - extracts patches (non-overlapping)
+      - trains 3D-CNN (no GRU)
+      - returns evaluation metrics and predicted maps
+    Returns:
+      dict with keys: model, metrics, y_pred_map (T,H,W), risk_map_avg (H,W)
+    """
+    assert len(env_factors_seq) == 6, "Expecting 6 years of environmental inputs (2014-2019)."
+    assert len(disease_maps_seq) == 6, "Expecting 6 years of disease maps (2014-2019)."
+
+    # Stack
+    X = stack_env_factors(env_factors_seq)  # (T,H,W,C)
+    y = stack_disease_maps(disease_maps_seq)  # (T,H,W)
+    T, H, W, C = X.shape
+
+    # Normalize
+    X_scaled, scalers = normalize_channels_over_time_space(X)
+
+    # Extract patches
+    X_patches, y_patches = extract_patches_sequence(X_scaled, y, patch_size)
+    if X_patches.shape[0] == 0:
+        raise ValueError("No patches were extracted. Check patch_size vs input spatial size and NaNs.")
+
+    print(f"[INFO] Extracted {X_patches.shape[0]} patches of shape {X_patches.shape[1:]}")
+
+    # Train-test split
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_patches, y_patches, test_size=test_size, random_state=SEED
+    )
+
+    # Build model
+    input_shape = (T, patch_size[0], patch_size[1], C)
+    model = build_3d_cnn_unet_like(input_shape, base_filters=32, dropout_rate=0.1)
+    model.summary()
+
+    # Callbacks
+    os.makedirs(model_dir, exist_ok=True)
+    ckpt_path = os.path.join(model_dir, "best_3dcnn.h5")
+    callbacks = [
+        EarlyStopping(monitor="val_loss", patience=6, restore_best_weights=True, verbose=1),
+        ModelCheckpoint(ckpt_path, monitor="val_loss", save_best_only=True, verbose=1),
+    ]
+
+    # Train
+    history = model.fit(
+        X_train,
+        y_train,
+        validation_data=(X_test, y_test),
+        epochs=epochs,
+        batch_size=batch_size,
+        callbacks=callbacks,
+        verbose=2,
+    )
+
+    # Predict on test set
+    y_pred_test = model.predict(X_test)
+   
+    y_test_flat = y_test.flatten()
+    y_pred_flat = y_pred_test.flatten()
+    rmse = np.sqrt(mean_squared_error(y_test_flat, y_pred_flat))
+    mae = mean_absolute_error(y_test_flat, y_pred_flat)
+
+
+    threshold = np.nanpercentile(y_test_flat, 75)  # example threshold: top 25% as positive
+    y_true_bin = (y_test_flat > threshold).astype(int)
+    y_pred_bin = (y_pred_flat > threshold).astype(int)
+    acc = accuracy_score(y_true_bin, y_pred_bin)
+    try:
+        auc = roc_auc_score(y_true_bin, y_pred_flat)
+    except ValueError:
+        auc = float("nan")  
+
+    print(f"[METRICS] RMSE={rmse:.4f}, MAE={mae:.4f}, Acc={acc:.4f}, AUC={auc:.4f}")
+
+   
+    T, ph, pw, _ = X_patches.shape[1:]
+    y_pred_map = np.zeros((T, H, W), dtype=np.float32)
+    count_map = np.zeros((T, H, W), dtype=np.int32)
+
+    patch_idx = 0
+    for i in range(0, H - ph + 1, ph):
+        for j in range(0, W - pw + 1, pw):
+            if patch_idx >= X_patches.shape[0]:
+                break
+            y_pred_map[:, i : i + ph, j : j + pw] += np.squeeze(y_pred_test[patch_idx], axis=-1)
+            count_map[:, i : i + ph, j : j + pw] += 1
+            patch_idx += 1
+
+
+    risk_map_avg = np.nanmean(y_pred_map, axis=0)  
+
+    results = {
+        "model": model,
+        "history": history,
+        "metrics": {"rmse": rmse, "mae": mae, "acc": acc, "auc": auc},
+        "y_pred_map": y_pred_map,
+        "risk_map_avg": risk_map_avg,
+        "scalers": scalers,
+    }
+    return results
+
+
+
+if __name__ == "__main__":
+    # load 6 years (2014..2019) of environmental factors (4 channels per year)
+    env_factors_seq = []
+    for year_index, year in enumerate(range(2014, 2020)):
+        
+        fpaths = [
+            f"data/{year}_env_factor1.tif",
+            f"data/{year}_env_factor2.tif",
+            f"data/{year}_env_factor3.tif",
+            f"data/{year}_env_factor4.tif",
+        ]
+        channels = [read_geotiff(p) for p in fpaths]
+        env_factors_seq.append(channels)
+
+    # Load disease maps
+    disease_maps_seq = []
+    for year in range(2014, 2019):
+        d = read_geotiff(f"data/{year}_disease.tif")
+        # Example cleaning step from your original script:
+        d = np.where(d == 250, 30, d).astype(np.float32)
+        disease_maps_seq.append(d)
+
+    # Train & evaluate
+    results = train_and_evaluate_3dcnn(
+        env_factors_seq=env_factors_seq,
+        disease_maps_seq=disease_maps_seq,
+        patch_size=(64, 64),
+        epochs=30,
+        batch_size=4,
+        test_size=0.2,
+        model_dir="models",
+    )
+
+ 
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(8, 6))
+    plt.imshow(results["risk_map_avg"])
+    plt.title("Average predicted risk map (2014-2019)")
+    plt.colorbar(label="Predicted risk")
+    plt.show()
