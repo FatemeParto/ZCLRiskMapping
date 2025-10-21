@@ -1,0 +1,15 @@
+
+Neural Network-Based Framework for Risk Mapping of Zoonotic Cutaneous Leishmaniasis Using Remote Sensing and GIS
+
+
+📄 Submitted to Environmental Research Communications
+
+Study Overview
+
+This work presents an integrated framework for the risk mapping of Zoonotic Cutaneous Leishmaniasis (ZCL), designed to capture the complex interactions between ecological drivers and disease distribution. The framework is implemented in three sequential phases:
+1.	Generation of disease and environmental maps to ensure precise and reliable spatial inputs.
+2.	Statistical analysis of ecological–epidemiological associations using correlation and regression techniques.
+3.	Neural network–based modeling for the production of high-resolution predictive risk maps.
+The approach leverages:
+
+
