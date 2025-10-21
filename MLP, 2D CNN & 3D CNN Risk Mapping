@@ -20,21 +20,16 @@ from sklearn.neural_network import MLPRegressor
 np.random.seed(42)
 tf.random.set_seed(42)
 
-# -------------------------
-# Utility Functions
-# -------------------------
 
 def read_geotiff(file_path):
-    """Read a single-band GeoTIFF file into a numpy array."""
     with rasterio.open(file_path) as src:
         return src.read(1)
 
 def stack_env_factors(env_factors):
-    """Stack multiple environmental factors into shape (H, W, C)."""
+   
     return np.stack(env_factors, axis=-1)
 
 def generate_feature_matrix(env_factors):
-    """Flatten environmental factors into a feature matrix (N, C)."""
     num_rows, num_cols = env_factors[0].shape
     feature_matrix = np.zeros((num_rows * num_cols, len(env_factors)))
     for i, factor in enumerate(env_factors):
@@ -42,7 +37,7 @@ def generate_feature_matrix(env_factors):
     return feature_matrix, num_rows, num_cols
 
 def evaluate_performance(y_true, y_pred, threshold=0.5):
-    """Compute regression + classification metrics."""
+
     mse = mean_squared_error(y_true, y_pred)
     mae = mean_absolute_error(y_true, y_pred)
 
@@ -86,12 +81,12 @@ def generate_disease_risk_map_mlp(env_factors, disease_map):
     mlp.fit(X_train, y_train)
     y_pred_test = mlp.predict(X_test)
 
-    mse, mae, accuracy, auc = evaluate_performance(y_test, y_pred_test)
+    mse, mae, auc = evaluate_performance(y_test, y_pred_test)
 
     # Predict full map
     y_pred_full = mlp.predict(X_scaled).reshape(num_rows, num_cols)
 
-    return y_pred_full, mse, mae, accuracy, auc
+    return y_pred_full, mse, mae, auc
 
 # -------------------------
 # CNN Model
@@ -154,11 +149,9 @@ def generate_disease_risk_map_cnn(env_factors, disease_map, epochs=5, batch_size
     y_pred_map = np.full((num_rows, num_cols), np.nan, dtype=np.float32)
     y_pred_map[mask] = y_pred_all[mask.flatten()]
 
-    return y_pred_map, mse, mae, accuracy, auc
+    return y_pred_map, mse, mae, auc
 
-# -------------------------
-# Main Script
-# -------------------------
+
 
 if __name__ == "__main__":
 
@@ -170,7 +163,7 @@ if __name__ == "__main__":
         r"C:\dem.tif"
 
     ]
-    disease_file = r"C:\Users\Yas\Desktop\maps-p3\idw3.tif"
+    disease_file = r"C:\ZCL.tif"
 
     # Load data
     env_factors = [read_geotiff(f) for f in env_files]
@@ -188,9 +181,9 @@ if __name__ == "__main__":
         generate_disease_risk_map_cnn(env_factors, disease_map)
 
     # Print metrics
-    print("Model\tRMSE\t\tMAE\t\tAccuracy\tAUC")
-    print(f"MLP\t{np.sqrt(mse_mlp):.4f}\t{mae_mlp:.4f}\t{acc_mlp:.4f}\t{auc_mlp:.4f}")
-    print(f"CNN\t{np.sqrt(mse_cnn):.4f}\t{mae_cnn:.4f}\t{acc_cnn:.4f}\t{auc_cnn:.4f}")
+    print("Model\tRMSE\t\tMAE\tAUC")
+    print(f"MLP\t{np.sqrt(mse_mlp):.4f}\t{mae_mlp:.4f}\t{auc_mlp:.4f}")
+    print(f"CNN\t{np.sqrt(mse_cnn):.4f}\t{mae_cnn:.4f}\t{auc_cnn:.4f}")
 
     # Visualization
 
@@ -239,7 +232,7 @@ tf.random.set_seed(SEED)
 
 # -----------------------------
 def read_geotiff(path: str) -> np.ndarray:
-    """Read single-band GeoTIFF and return as 2D float32 array."""
+    
     with rasterio.open(path) as src:
         arr = src.read(1).astype(np.float32)
     return arr
@@ -452,7 +445,7 @@ def train_and_evaluate_3dcnn(
     except ValueError:
         auc = float("nan")  
 
-    print(f"[METRICS] RMSE={rmse:.4f}, MAE={mae:.4f}, Acc={acc:.4f}, AUC={auc:.4f}")
+    print(f"[METRICS] RMSE={rmse:.4f}, MAE={mae:.4f}, AUC={auc:.4f}")
 
    
     T, ph, pw, _ = X_patches.shape[1:]
@@ -474,7 +467,7 @@ def train_and_evaluate_3dcnn(
     results = {
         "model": model,
         "history": history,
-        "metrics": {"rmse": rmse, "mae": mae, "acc": acc, "auc": auc},
+        "metrics": {"rmse": rmse, "mae": mae, "auc": auc},
         "y_pred_map": y_pred_map,
         "risk_map_avg": risk_map_avg,
         "scalers": scalers,
@@ -520,7 +513,7 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
     plt.figure(figsize=(8, 6))
-    plt.imshow(results["risk_map_avg"])
-    plt.title("Average predicted risk map (2014-2019)")
+    plt.imshow(results["risk_map"])
+    plt.title("predicted risk map")
     plt.colorbar(label="Predicted risk")
     plt.show()
