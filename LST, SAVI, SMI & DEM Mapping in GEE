@@ -1,0 +1,192 @@
+// ============================================================
+// Landsat 8 Analysis: LST, SAVI, SMI, and DEM/Terrain Analysis
+// ============================================================
+
+// -------------------------
+// Utility Functions
+// -------------------------
+
+/**
+ * Mask clouds and shadows for Landsat 8 Surface Reflectance.
+ * @param {ee.Image} image - Landsat 8 image.
+ * @return {ee.Image} Masked image.
+ */
+function maskL8SR(image) {
+  var cloudShadowBitMask = (1 << 2);
+  var cloudsBitMask = (1 << 7);
+  var qa = image.select('pixel_qa');
+  var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+               .and(qa.bitwiseAnd(cloudsBitMask).eq(0));
+  return image.updateMask(mask);
+}
+
+/**
+ * Compute Land Surface Temperature (LST) from thermal band and NDVI.
+ * @param {ee.Image} img - Landsat 8 image.
+ * @return {ee.Image} LST in Celsius.
+ */
+function computeLST(img) {
+  var bands = img.select('B[2-7]').clip(geometry).multiply(0.0001);
+  var ndvi = bands.normalizedDifference(['B5', 'B4']);
+  
+  // Land Surface Emissivity (LSE)
+  var LSE = ndvi.expression('1.009 + 0.047 * log(ndvi)', {'ndvi': ndvi});
+  var emissivity = ndvi.where(ndvi.lt(-0.185), 0.995)
+                       .where(ndvi.gte(-0.185).and(ndvi.lt(0.157)), 0.985)
+                       .where(ndvi.gte(0.157).and(ndvi.lte(0.727)), LSE)
+                       .where(ndvi.gt(0.727), 0.990);
+
+  // Thermal band conversion
+  var tir = img.select('B10').clip(geometry).multiply(0.1);
+  var lst = emissivity.expression(
+    '(bt) / (1 + ((bt * 10.895) / 14380.0) * log(e))',
+    {'bt': tir, 'e': emissivity}
+  );
+  return lst.subtract(273.15).rename('LST')
+            .copyProperties(img, ['system:time_start','system:time_end']);
+}
+
+/**
+ * Compute SAVI index.
+ * @param {ee.Image} image - Landsat 8 image.
+ * @return {ee.Image} Image with SAVI band.
+ */
+function computeSAVI(image) {
+  var savi = image.expression(
+    '1.5 * (NIR - RED) / (NIR + RED + 0.5)', {
+      'NIR': image.select('B5'),
+      'RED': image.select('B4')
+    }).rename('SAVI');
+  return image.addBands(savi)
+              .copyProperties(image, ['system:time_start','system:time_end']);
+}
+
+/**
+ * Compute Soil Moisture Index (SMI) from thermal band.
+ * @param {ee.Image} img - Landsat 8 L2 image.
+ * @return {ee.Image} SMI normalized between 0 and 1.
+ */
+function computeSMI(img) {
+  var tir = img.select('ST_B10').clip(geometry);
+  var normalized = tir.subtract(51.78).divide(30.6).multiply(-1);
+  return normalized.rename('SMI')
+                   .copyProperties(img, ['system:time_start','system:time_end']);
+}
+
+// -------------------------
+// Load and Filter Landsat 8 Collections
+// -------------------------
+
+var landsatSR = ee.ImageCollection('LANDSAT/LC08/C01/T1_SR')
+                  .filterBounds(geometry)
+                  .filterDate('2014-01-01', '2019-12-31')
+                  .map(maskL8SR);
+
+var landsatL2 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+                  .filterBounds(geometry)
+                  .filterDate('2014-01-01', '2019-12-31');
+
+// -------------------------
+// LST Calculation
+// -------------------------
+var LST_collection = landsatSR.map(computeLST);
+Map.addLayer(LST_collection.mosaic(), {min: -18, max: 25, palette: ['white','blue','green','red']}, 'LST');
+
+var lstChart = ui.Chart.image.series({
+  imageCollection: LST_collection,
+  region: geometry,
+  reducer: ee.Reducer.mean(),
+  scale: 300,
+  xProperty: 'system:time_start'
+}).setOptions({title: 'LST Over Time', vAxis: {title: 'LST (°C)'}});
+print(lstChart);
+
+Export.image.toDrive({
+  image: LST_collection.mosaic(),
+  description: 'LST',
+  region: geometry,
+  scale: 30,
+  maxPixels: 1e12
+});
+
+// -------------------------
+// SAVI Calculation
+// -------------------------
+var SAVI_collection = landsatSR.map(computeSAVI);
+
+Map.addLayer(SAVI_collection.median(), {
+  min: 0, max: 1, palette: ['FFFFFF','CE7E45','DF923D','F1B555','FCD163','99B718','74A901',
+                            '66A000','529400','3E8601','207401','056201','004C00','023B01',
+                            '012E01','011D01','011301']
+}, 'SAVI');
+
+var saviChart = ui.Chart.image.series({
+  imageCollection: SAVI_collection,
+  region: geometry,
+  reducer: ee.Reducer.mean(),
+  scale: 300,
+  xProperty: 'system:time_start'
+}).setOptions({title: 'SAVI Over Time', vAxis: {title: 'SAVI'}});
+print(saviChart);
+
+Export.image.toDrive({
+  image: SAVI_collection.median(),
+  description: 'SAVI',
+  region: geometry,
+  scale: 30,
+  maxPixels: 1e12
+});
+
+// -------------------------
+// Soil Moisture Index (SMI) Calculation
+// -------------------------
+var SMI_collection = landsatL2.map(computeSMI);
+
+Map.addLayer(SMI_collection.median(), {
+  min: 0, max: 1, palette: ['FFFFFF','CE7E45','DF923D','F1B555','FCD163','99B718','74A901',
+                            '66A000','529400','3E8601','207401','056201','004C00','023B01',
+                            '012E01','011D01','011301']
+}, 'SMI');
+
+Export.image.toDrive({
+  image: SMI_collection.median(),
+  description: 'SMI',
+  region: geometry,
+  scale: 30,
+  maxPixels: 1e12
+});
+
+var smiChart = ui.Chart.image.series({
+  imageCollection: SMI_collection,
+  region: geometry,
+  reducer: ee.Reducer.mean(),
+  scale: 300,
+  xProperty: 'system:time_start'
+}).setOptions({title: 'SMI Over Time', vAxis: {title: 'SMI'}});
+print(smiChart);
+
+// -------------------------
+// DEM & Terrain Analysis
+// -------------------------
+var dem = ee.Image('USGS/SRTMGL1_003').clip(geometry);
+var slope = ee.Terrain.slope(dem);
+var aspect = ee.Terrain.aspect(dem);
+var sinAspect = aspect.divide(180).multiply(Math.PI).sin();
+
+Map.addLayer(slope, {min: 0, max: 60, palette: ['white','orange','green','brown']}, 'Slope');
+Map.addLayer(sinAspect, {min: -1, max: 1}, 'Sin(Aspect)');
+
+Export.image.toDrive({
+  image: slope,
+  description: 'Slope',
+  region: geometry,
+  scale: 30,
+  maxPixels: 1e12
+});
+
+var meanElevation = dem.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: geometry,
+  scale: 90
+}).get('elevation');
+print('Mean Elevation:', meanElevation);
